@@ -4,13 +4,17 @@
 
 import animated_drawings.render
 import logging
+import os
 from pathlib import Path
 import sys
 import yaml
 from pkg_resources import resource_filename
 
 
-def annotations_to_animation(char_anno_dir: str, motion_cfg_fn: str, retarget_cfg_fn: str):
+def annotations_to_animation(char_anno_dir: str, motion_cfg_fn: str,
+                             retarget_cfg_fn: str,
+                             output_path: str = None,
+                             use_mesa: bool = None):
     """
     Given a path to a directory with character annotations, a motion configuration file, and a retarget configuration file,
     creates an animation and saves it to {annotation_dir}/video.png
@@ -23,13 +27,24 @@ def annotations_to_animation(char_anno_dir: str, motion_cfg_fn: str, retarget_cf
         'retarget_cfg': str(Path(retarget_cfg_fn).resolve())
     }
 
+    # ToonATA: headless rendering and output path are configurable.
+    # Without a view section this script cannot run on a machine with no
+    # display, which is every WSL or server environment.
+    if use_mesa is None:
+        use_mesa = os.environ.get('AD_USE_MESA', '').lower() in ('1', 'true', 'yes')
+    if output_path is None:
+        output_path = os.environ.get('AD_OUTPUT_PATH') or \
+            str(Path(char_anno_dir, 'video.gif').resolve())
+
     # create mvc config
     mvc_cfg = {
         'scene': {'ANIMATED_CHARACTERS': [animated_drawing_dict]},  # add the character to the scene
         'controller': {
             'MODE': 'video_render',  # 'video_render' or 'interactive'
-            'OUTPUT_VIDEO_PATH': str(Path(char_anno_dir, 'video.gif').resolve())}  # set the output location
+            'OUTPUT_VIDEO_PATH': str(Path(output_path).resolve())}  # set the output location
     }
+    if use_mesa:
+        mvc_cfg['view'] = {'USE_MESA': True}
 
     # write the new mvc config file out
     output_mvc_cfn_fn = str(Path(char_anno_dir, 'mvc_cfg.yaml'))
