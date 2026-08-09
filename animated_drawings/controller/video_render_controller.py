@@ -143,14 +143,48 @@ class VideoWriter():
         logging.info(msg)
         print(msg)
 
-        if output_p.suffix == '.gif':
+        if output_p.suffix == '.png':  # ToonATA eklentisi
+            return PNGWriter(controller)
+        elif output_p.suffix == '.gif':
             return GIFWriter(controller)
         elif output_p.suffix == '.mp4':
             return MP4Writer(controller)
         else:
-            msg = f'Unsupported output video file extension ({output_p.suffix}). Only .gif and .mp4 are supported.'
+            msg = f'Unsupported output video file extension ({output_p.suffix}). Only .png (RGBA frame sequence), .gif and .mp4 are supported.'
             logging.critical(msg)
             assert False, msg
+
+
+class PNGWriter(VideoWriter):
+    """
+    ToonATA eklentisi: her kareyi ayri bir RGBA PNG olarak yazar.
+
+    Ust proje yalnizca .gif ve .mp4 uretiyor. .gif 256 renk + 1 bit alfaya
+    dusuruyor, .mp4 ise alfayi tamamen atiyor; ikisi de compositor icin
+    yetersiz. Framebuffer zaten BGRA olarak okundugu icin tam alfa burada
+    hicbir kayip olmadan diske yazilabiliyor.
+
+    OUTPUT_VIDEO_PATH olarak '.../frames.png' verilirse kareler '.../frames/'
+    dizinine 00000.png, 00001.png ... seklinde yazilir.
+    """
+
+    def __init__(self, controller: VideoRenderController) -> None:
+        assert isinstance(controller.cfg.output_video_path, str)  # for static analysis
+        output_p = Path(controller.cfg.output_video_path)
+        self.output_dir = output_p.parent / output_p.stem
+        self.output_dir.mkdir(exist_ok=True, parents=True)
+        self.frame_idx: int = 0
+        logging.info(f'PNGWriter will write RGBA frames to {self.output_dir.resolve()}')
+
+    def process_frame(self, frame: npt.NDArray[np.uint8]) -> None:
+        """ BGRA -> RGBA cevirip kareyi diske yaz. Alfa korunur. """
+        from PIL import Image
+        rgba = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGBA)
+        Image.fromarray(rgba).save(self.output_dir / f'{self.frame_idx:05d}.png')
+        self.frame_idx += 1
+
+    def cleanup(self) -> None:
+        logging.info(f'Wrote {self.frame_idx} RGBA PNG frames to {self.output_dir.resolve()}')
 
 
 class GIFWriter(VideoWriter):

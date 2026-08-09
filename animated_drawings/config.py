@@ -230,7 +230,8 @@ class ControllerConfig():
             self.output_video_path: Union[None, str] = controller_cfg['OUTPUT_VIDEO_PATH']
             assert isinstance(self.output_video_path, (NoneType, str)), 'type is not None or str'
             if isinstance(self.output_video_path, str):
-                assert Path(self.output_video_path).suffix in ('.gif', '.mp4'), 'output video extension not .gif or .mp4 '
+                assert Path(self.output_video_path).suffix in ('.png', '.gif', '.mp4'), \
+                    'output video extension not .png, .gif or .mp4 '  # ToonATA: .png = RGBA kare dizisi
         except (AssertionError, ValueError) as e:
             msg = f'Error in OUTPUT_VIDEO_PATH config parameter: {e}'
             logging.critical(msg)
