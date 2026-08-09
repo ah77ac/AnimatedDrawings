@@ -2,6 +2,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import os
 import sys
 import requests
 import cv2
@@ -45,35 +46,66 @@ def image_to_annotations(img_fn: str, out_dir: str) -> None:
         scale = 1000 / np.max(img.shape)
         img = cv2.resize(img, (round(scale * img.shape[1]), round(scale * img.shape[0])))
 
-    # convert to bytes and send to torchserve
-    img_b = cv2.imencode('.png', img)[1].tobytes()
-    request_data = {'data': img_b}
-    resp = requests.post("http://localhost:8080/predictions/drawn_humanoid_detector", files=request_data, verify=False)
-    if resp is None or resp.status_code >= 300:
-        raise Exception(f"Failed to get bounding box, please check if the 'docker_torchserve' is running and healthy, resp: {resp}")
+    # ToonATA: dis maske verildiyse burada yukleniyor; hem kirpma kutusunu
+    # hem de bolutlemeyi o belirleyecek.
+    _ext_mask = None
+    _mask_fn = os.environ.get("AD_MASK_PATH")
+    if _mask_fn:
+        _ext_mask = cv2.imread(_mask_fn, cv2.IMREAD_GRAYSCALE)
+        if _ext_mask is None:
+            raise FileNotFoundError("AD_MASK_PATH okunamadi: " + _mask_fn)
+        if _ext_mask.shape[:2] != img.shape[:2]:
+            _ext_mask = cv2.resize(_ext_mask, (img.shape[1], img.shape[0]),
+                                   interpolation=cv2.INTER_NEAREST)
 
-    detection_results = json.loads(resp.content)
+    # ToonATA: dedektor yalnizca kirpma kutusu icin cagriliyordu. Dis maske
+    # varsa kutuyu zaten maskeden aliyoruz, dolayisiyla dedektore hic gerek
+    # yok. Ustelik dedektor sik sik ya karakteri hic bulamiyor (prenses) ya da
+    # kutuyu kisa kesiyor (kedi_adam olcumunde bacaklarin 116 pikseli disarida
+    # kaldi). Atlayinca hem o hata sinifi kalkiyor hem bir model cagrisi az.
+    if _ext_mask is not None:
+        _ys, _xs = np.where(_ext_mask > 127)
+        t, b = int(_ys.min()), int(_ys.max()) + 1
+        l, r = int(_xs.min()), int(_xs.max()) + 1
+    else:
+        # convert to bytes and send to torchserve
+        img_b = cv2.imencode('.png', img)[1].tobytes()
+        request_data = {'data': img_b}
+        resp = requests.post("http://localhost:8080/predictions/drawn_humanoid_detector", files=request_data, verify=False)
+        if resp is None or resp.status_code >= 300:
+            raise Exception(f"Failed to get bounding box, please check if the 'docker_torchserve' is running and healthy, resp: {resp}")
 
-    # error check detection_results
-    if isinstance(detection_results, dict) and 'code' in detection_results.keys() and detection_results['code'] == 404:
-        assert False, f'Error performing detection. Check that drawn_humanoid_detector.mar was properly downloaded. Response: {detection_results}'
+        detection_results = json.loads(resp.content)
 
-    # order results by score, descending
-    detection_results.sort(key=lambda x: x['score'], reverse=True)
+        # error check detection_results
+        if isinstance(detection_results, dict) and 'code' in detection_results.keys() and detection_results['code'] == 404:
+            assert False, f'Error performing detection. Check that drawn_humanoid_detector.mar was properly downloaded. Response: {detection_results}'
 
-    # if no drawn humanoids detected, abort
-    if len(detection_results) == 0:
-        msg = 'Could not detect any drawn humanoids in the image. Aborting'
-        logging.critical(msg)
-        assert False, msg
+        # order results by score, descending
+        detection_results.sort(key=lambda x: x['score'], reverse=True)
 
-    # otherwise, report # detected and score of highest.
-    msg = f'Detected {len(detection_results)} humanoids in image. Using detection with highest score {detection_results[0]["score"]}.'
-    logging.info(msg)
+        # if no drawn humanoids detected, abort
+        if len(detection_results) == 0:
+            msg = 'Could not detect any drawn humanoids in the image. Aborting'
+            logging.critical(msg)
+            assert False, msg
 
-    # calculate the coordinates of the character bounding box
-    bbox = np.array(detection_results[0]['bbox'])
-    l, t, r, b = [round(x) for x in bbox]
+        # otherwise, report # detected and score of highest.
+        msg = f'Detected {len(detection_results)} humanoids in image. Using detection with highest score {detection_results[0]["score"]}.'
+        logging.info(msg)
+
+        # calculate the coordinates of the character bounding box
+        bbox = np.array(detection_results[0]['bbox'])
+        l, t, r, b = [round(x) for x in bbox]
+
+    # Kutuya pay ekliyoruz. Kutu silueti sikica sardiginda kirpilmis maske
+    # kadraj kenarina degiyor; skimage.measure.find_contours o durumda kapali
+    # halka uretemeyip acik yaylar donduruyor ve ag ureticisi cop bir cevre
+    # cikariyor (ARAP tekil matris veriyor).
+    _margin = int(os.environ.get("AD_BBOX_MARGIN", 16))
+    if _margin:
+        t, b = max(t - _margin, 0), min(b + _margin, img.shape[0])
+        l, r = max(l - _margin, 0), min(r + _margin, img.shape[1])
 
     # dump the bounding box results to file
     with open(str(outdir/'bounding_box.yaml'), 'w') as f:
@@ -88,7 +120,13 @@ def image_to_annotations(img_fn: str, out_dir: str) -> None:
     cropped = img[t:b, l:r]
 
     # get segmentation mask
-    mask = segment(cropped)
+    if _ext_mask is not None:
+        # ToonATA: asagidaki segment() duz renkli genis alanlarda (etek,
+        # pantolon, hayvan bacagi) yerel kontrast bulamayip delik biraktigi
+        # icin kullanilmiyor.
+        mask = ((_ext_mask[t:b, l:r] > 127) * 255).astype(np.uint8)
+    else:
+        mask = segment(cropped)
 
     # send cropped image to pose estimator
     data_file = {'data': cv2.imencode('.png', cropped)[1].tobytes()}
