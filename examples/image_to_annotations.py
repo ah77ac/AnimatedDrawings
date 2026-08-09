@@ -64,9 +64,25 @@ def image_to_annotations(img_fn: str, out_dir: str) -> None:
     # kutuyu kisa kesiyor (kedi_adam olcumunde bacaklarin 116 pikseli disarida
     # kaldi). Atlayinca hem o hata sinifi kalkiyor hem bir model cagrisi az.
     if _ext_mask is not None:
+        if not (_ext_mask > 127).any():
+            raise ValueError("AD_MASK_PATH bos maske gosteriyor: " + _mask_fn)
+
+        # Kutuya pay ekleyecegiz. Payi kirparak (clamp) eklemek yetmiyor:
+        # karakter kadraja dayanmissa pay sifirlaniyor, kirpilmis maske kenara
+        # deger ve skimage.measure.find_contours kapali halka uretemez —
+        # poligon kendisiyle kesisir, ARAP tekil matris verir. Bu yuzden pay
+        # kirpilmiyor, goruntu buyutuluyor: boslugun var oldugu garanti.
+        _margin = int(os.environ.get("AD_BBOX_MARGIN", 16))
+        if _margin:
+            img = cv2.copyMakeBorder(img, _margin, _margin, _margin, _margin,
+                                     cv2.BORDER_CONSTANT, value=(0, 0, 0))
+            _ext_mask = cv2.copyMakeBorder(_ext_mask, _margin, _margin,
+                                           _margin, _margin,
+                                           cv2.BORDER_CONSTANT, value=0)
+
         _ys, _xs = np.where(_ext_mask > 127)
-        t, b = int(_ys.min()), int(_ys.max()) + 1
-        l, r = int(_xs.min()), int(_xs.max()) + 1
+        t, b = int(_ys.min()) - _margin, int(_ys.max()) + 1 + _margin
+        l, r = int(_xs.min()) - _margin, int(_xs.max()) + 1 + _margin
     else:
         # convert to bytes and send to torchserve
         img_b = cv2.imencode('.png', img)[1].tobytes()
@@ -97,15 +113,6 @@ def image_to_annotations(img_fn: str, out_dir: str) -> None:
         # calculate the coordinates of the character bounding box
         bbox = np.array(detection_results[0]['bbox'])
         l, t, r, b = [round(x) for x in bbox]
-
-    # Kutuya pay ekliyoruz. Kutu silueti sikica sardiginda kirpilmis maske
-    # kadraj kenarina degiyor; skimage.measure.find_contours o durumda kapali
-    # halka uretemeyip acik yaylar donduruyor ve ag ureticisi cop bir cevre
-    # cikariyor (ARAP tekil matris veriyor).
-    _margin = int(os.environ.get("AD_BBOX_MARGIN", 16))
-    if _margin:
-        t, b = max(t - _margin, 0), min(b + _margin, img.shape[0])
-        l, r = max(l - _margin, 0), min(r + _margin, img.shape[1])
 
     # dump the bounding box results to file
     with open(str(outdir/'bounding_box.yaml'), 'w') as f:
